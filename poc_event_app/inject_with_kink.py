@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
+import json
 from typing import Any, Dict, Generic, List, Type, TypeVar
 
 from kink import di, inject
-from pika import BlockingConnection
+from pika import BlockingConnection, ConnectionParameters, BasicProperties
 
 
 # System/Architechture Level interfaces
@@ -19,6 +21,11 @@ class Event(ABC):
     @staticmethod
     @abstractmethod
     def deserialize(b: bytes) -> "Event":
+        raise NotImplementedError()
+
+    @staticmethod
+    @abstractmethod
+    def get_revision() -> datetime:
         raise NotImplementedError()
 
 
@@ -41,16 +48,24 @@ class EventDispatcher(ABC):
 
 
 class NewMessageEvent(Event):
+    def __init__(self, message: str) -> None:
+        self.message = message
+
     def serialize(self) -> bytes:
-        return b""
+        return json.dumps({"message": self.message}).encode()
 
     @staticmethod
     def deserialize(_b: bytes) -> "Event":
-        return NewMessageEvent()
+        d = json.loads(_b.decode())
+        return NewMessageEvent(d["message"])
 
     @staticmethod
     def get_type() -> str:
         return "some-proj/some-domain/some-event"
+
+    @staticmethod
+    def get_revision() -> datetime:
+        return datetime(2022, 10, 26, 2, 49)
 
 
 class NotificationService(ABC):
@@ -115,9 +130,15 @@ class RabbitMQEvenDispatcher(EventDispatcher):
         serialized_event = event.serialize()
 
         self.connection.channel().basic_publish(
+            exchange="",
             routing_key="test",
-            properties={"type": event.get_type()},
-            body=serialized_event,
+            properties=BasicProperties(
+                headers={
+                    "type": event.get_type(),
+                    "revision": event.get_revision().isoformat()
+                },
+            ),
+            body=serialized_event.decode(),
         )
 
 
@@ -153,11 +174,13 @@ def bootstrap() -> None:
     # It means that whenever i instance a class with a argument of type NotificationService, kirk will detect it and create a new instance of PrintNotificationService automatically
     di[NotificationService] = lambda di: PrintNotificationService()
 
-    event_dispatcher = RuntimeEventDispatcher(EVENT_HANDLERS)
+    rmq_con = BlockingConnection(ConnectionParameters("localhost", 5672))
+
+    event_dispatcher = RabbitMQEvenDispatcher(connection=rmq_con)
 
     while True:
         input()
-        event_dispatcher.dispatch(NewMessageEvent())
+        event_dispatcher.dispatch(NewMessageEvent(message="Hello World!"))
 
 
 bootstrap()
